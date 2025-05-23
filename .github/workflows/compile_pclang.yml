@@ -63,6 +63,9 @@ env:
 jobs:
   build:
     runs-on: ubuntu-22.04   # Jammy Jellyfish runner
+    permissions:
+      contents: read
+      actions: write
 
     steps:
     - name: Checkout repository
@@ -186,7 +189,7 @@ jobs:
         files: /workdir/release_up/*
 
     - name: House‑keep old workflow runs
-      uses: GitRML/delete-workflow-runs@v3
+      uses: Mattraks/delete-workflow-runs@v2
       with:
         retain_days: 1
         keep_minimum_runs: 3
