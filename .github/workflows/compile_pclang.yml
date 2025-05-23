@@ -1,11 +1,17 @@
-#
-# Copyright (c) 2022-2023 SkyFaklist
+# Copyright (c) 2022-2025 SkyFaklist
 #
 # This is free software, licensed under the GPL License.
 # See /LICENSE for more information.
 #
-# Description: Build UA Kernel using GitHub Actions
+# Description: Build UA Kernel using GitHub Actions (Jammy 22.04 base image)
 #
+# Notes for Ubuntu 22.04 transition
+# – Runner image changed to **ubuntu-22.04**.
+# – Dependency list refreshed for Jammy: removed EOL packages (python 2, python 3.7, SDL 1.2),
+#   switched to defaults available in the official repositories (python 3.10, openjdk‑11),
+#   added *python-is-python3* shim for legacy scripts that still invoke the un‑versioned “python”.
+# – The deprecated set‑output command is still used for backward‑compatibility with
+#   tooling that parses these outputs; consider migrating to *outputs:* in a future cleanup.
 
 name: Build UA Kernel (Proton-Clang)
 
@@ -14,141 +20,162 @@ on:
   workflow_dispatch:
     inputs:
       repo:
-        description: 'Kernel Repo URL'
+        description: "Kernel Repo URL"
         required: true
-        default: ''
+        default: ""
       repo_branch:
-        description: 'Branch of Kernel repo'
+        description: "Branch of Kernel repo"
         required: true
-        default: 'master'
+        default: "master"
       device:
-        description: 'Device code of Kernel'
+        description: "Device code of Kernel"
         required: true
-        default: ''
+        default: ""
       ssh:
-        description: 'SSH connection to Actions'
+        description: "SSH connection to Actions"
         required: false
-        default: 'false'
+        default: "false"
       custom:
-        description: 'Run custom script'
+        description: "Run custom script"
         required: false
-        default: 'false'
+        default: "false"
       kernelsu:
-        description: 'Compile KernelSU'
+        description: "Compile KernelSU"
         required: false
-        default: 'false'
+        default: "false"
       ccache:
-        description: 'Use CCache'
+        description: "Use CCache"
         required: true
-        default: 'true'
+        default: "true"
 
 env:
   UPLOAD_BIN_DIR: true
   UPLOAD_RELEASE: true
   REPO_BRANCH: master
   COMPER_URL: https://github.com/kdrag0n/proton-clang.git
-  ANYKERNEL_URL: https://github.com/osm0sis/AnyKernel3.git 
+  ANYKERNEL_URL: https://github.com/osm0sis/AnyKernel3.git
   TZ: Asia/Shanghai
   ARCH: arm64
   SUBARCH: arm64
   CCACHE_DIR: ~/.ccache
   BUILDER: /workdir/toolchain/bin/
-  
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-22.04   # Jammy Jellyfish runner
 
     steps:
-    - name: Checkout
-      uses: actions/checkout@main
+    - name: Checkout repository
+      uses: actions/checkout@v4
 
-    - name: Initialization environment
+    - name: Initialise build environment (Ubuntu 22.04)
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
+        # Clean pre‑installed software we never use to free space on the runner image
         sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
+
+        # Update package lists and upgrade base system (Jammy)
         sudo -E apt-get -qq update
-        #sudo -E apt-get -qq install $(curl -fsSL git.io/depends-ubuntu-2004)
-        sudo -E apt-get install -y bc bison build-essential binutils-dev ca-certificates ccache cmake curl flex file g++-multilib git gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev lib32z1-dev libelf-dev liblz4-tool libncurses5-dev libsdl1.2-dev libssl-dev libwxgtk3.0-gtk3-dev libc6-i386 libxml2 libxml2-utils lld lzop ninja-build pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev unzip openjdk-8-jdk language-pack-zh-hans texinfo python python3.7 vim u-boot-tools xz-utils zlib1g-dev
+        sudo -E apt-get -qq upgrade -y
+
+        # Install build dependencies (refreshed for Ubuntu 22.04)
+        sudo -E apt-get -y install \
+          bc bison build-essential binutils-dev ca-certificates ccache cmake curl flex file \
+          g++-multilib git gnupg gperf imagemagick \
+          lib32ncurses5-dev lib32readline-dev lib32z1-dev libelf-dev liblz4-tool libncurses5-dev \
+          libsdl2-dev libssl-dev libwxgtk3.0-gtk3-dev libc6-i386 \
+          libxml2 libxml2-utils lld lzop ninja-build pngcrush rsync \
+          schedtool squashfs-tools xsltproc zip zlib1g-dev unzip \
+          openjdk-11-jdk language-pack-zh-hans texinfo \
+          python3 python3-pip python-is-python3 vim u-boot-tools xz-utils
+
+        # Clean cached package files to save space
         sudo -E apt-get -qq autoremove --purge
         sudo -E apt-get -qq clean
+
+        # Set timezone for build logs
         sudo timedatectl set-timezone "$TZ"
+
+        # Prepare writable work directory
         sudo mkdir -p /workdir
         sudo chown $USER:$GROUPS /workdir
 
-    - name: Clone source code
+    - name: Clone source code and toolchains
       working-directory: /workdir
       run: |
         df -hT $PWD
-        mkdir extra
-        mv $GITHUB_WORKSPACE/anykernel.sh extra/ && mv $GITHUB_WORKSPACE/compile.sh extra/ && mv $GITHUB_WORKSPACE/custom.sh extra/
-        git clone $ANYKERNEL_URL anykernel
-        rm -rf ./anykernel/.github && rm -rf ./anykernel/README.md && rm -rf ./anykernel/.git && rm -rf ./anykernel/anykernel.sh
-        git clone --depth=1 ${{github.event.inputs.repo}} -b ${{github.event.inputs.repo_branch}} kernel
+
+        # Stash helper scripts shipped with the workflow itself
+        mkdir -p extra
+        mv $GITHUB_WORKSPACE/anykernel.sh extra/
+        mv $GITHUB_WORKSPACE/compile.sh extra/
+        mv $GITHUB_WORKSPACE/custom.sh extra/ || true
+
+        # AnyKernel for packaging
+        git clone --depth=1 $ANYKERNEL_URL anykernel
+        rm -rf anykernel/{.github,README.md,.git,anykernel.sh}
+
+        # Kernel source under test
+        git clone --depth=1 "${{ github.event.inputs.repo }}" -b "${{ github.event.inputs.repo_branch }}" kernel
+
+        # Proton‑Clang toolchain
         git clone --depth=1 $COMPER_URL toolchain
-        cp ./extra/compile.sh ./kernel/
-        cp ./extra/anykernel.sh ./anykernel/
+
+        # Restore helper scripts
+        cp extra/compile.sh kernel/
+        cp extra/anykernel.sh anykernel/
         ln -sf /workdir/kernel $GITHUB_WORKSPACE/kernel
 
-    - name: Set CCache (${{github.event.inputs.ccache}})
-      id: ccache
-      working-directory: /workdir/kernel
-      if: (github.event.inputs.ccache == 'true' && github.event.inputs.ccache  != 'false') || contains(github.event.action, 'ccache')
+    - name: Configure CCache (${{ github.event.inputs.ccache }})
+      if: (github.event.inputs.ccache == 'true' && github.event.inputs.ccache != 'false') || contains(github.event.action, 'ccache')
       run: |
         ccache -M 15G
-        
-    - name: Patch KernelSU (${{github.event.inputs.kernelsu}})
-      id: kernelsu
+
+    - name: Apply KernelSU patch (${{ github.event.inputs.kernelsu }})
+      if: (github.event.inputs.kernelsu == 'true' && github.event.inputs.kernelsu != 'false') || contains(github.event.action, 'kernelsu')
       working-directory: /workdir/kernel
-      if: (github.event.inputs.kernelsu == 'true' && github.event.inputs.kernelsu  != 'false') || contains(github.event.action, 'kernelsu')
       run: |
-       curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
-        
-    - name: Kernel Custom Script (${{github.event.inputs.custom}})
-      id: custom
+        curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash -
+
+    - name: Execute custom script (${{ github.event.inputs.custom }})
+      if: (github.event.inputs.custom == 'true' && github.event.inputs.custom != 'false') || contains(github.event.action, 'custom')
       working-directory: /workdir
-      if: (github.event.inputs.custom == 'true' && github.event.inputs.custom  != 'false') || contains(github.event.action, 'custom')
       run: |
-       cp ./extra/custom.sh ./kernel/
-       chmod +x ./kernel/custom.sh
-       bash ./kernel/custom.sh
-        
-    - name: SSH connection to Actions (${{github.event.inputs.ssh}})
-      id: ssh
+        cp extra/custom.sh kernel/
+        chmod +x kernel/custom.sh
+        bash kernel/custom.sh
+
+    - name: Optional SSH debugging session (${{ github.event.inputs.ssh }})
+      if: (github.event.inputs.ssh == 'true' && github.event.inputs.ssh != 'false') || contains(github.event.action, 'ssh')
       uses: mxschmitt/action-tmate@v3
-      if: (github.event.inputs.ssh == 'true' && github.event.inputs.ssh  != 'false') || contains(github.event.action, 'ssh')
 
-    - name: Set Device
+    - name: Defconfig – set device target
       working-directory: /workdir/kernel
       run: |
-         make O=out ${{github.event.inputs.device}}_defconfig
+        make O=out "${{ github.event.inputs.device }}_defconfig"
 
-    - name: Compile Source
+    - name: Compile kernel sources
       working-directory: /workdir/kernel
       run: |
-        chmod +x ./compile.sh
-        bash ./compile.sh
-        ls /workdir/kernel/out/arch/arm64/boot/
-    
-   
-    - name: Upload Kernel directory
-      uses: actions/upload-artifact@main
+        chmod +x compile.sh
+        bash compile.sh
+        ls out/arch/arm64/boot/
+
+    - name: Upload build artefacts (boot images etc.)
+      uses: actions/upload-artifact@v4
       with:
-        working-directory: /workdir/kernel
-        name: UALoader_${{github.event.inputs.device}}_Fullpack
+        name: UALoader_${{ github.event.inputs.device }}_Fullpack
         path: /workdir/kernel/out/arch/arm64/boot/
-        
-   
+
     - name: Generate release tag
       id: tag
       if: env.UPLOAD_RELEASE == 'true' && !cancelled()
       run: |
-        echo "::set-output name=release_tag::$("UAB-"+date +"%Y.%m.%d-%H%M")"
-        touch release.txt
+        echo "::set-output name=release_tag::$(echo UAB-$(date +'%Y.%m.%d-%H%M'))"
         echo "::set-output name=status::success"
 
-    - name: Upload Kernel to release
+    - name: Publish release
       uses: softprops/action-gh-release@v1
       if: steps.tag.outputs.status == 'success' && !cancelled()
       env:
@@ -157,9 +184,9 @@ jobs:
         tag_name: ${{ steps.tag.outputs.release_tag }}
         body_path: release.txt
         files: /workdir/release_up/*
-       
-    - name: Delete workflow runs
-      uses: GitRML/delete-workflow-runs@main
+
+    - name: House‑keep old workflow runs
+      uses: GitRML/delete-workflow-runs@v3
       with:
         retain_days: 1
         keep_minimum_runs: 3
